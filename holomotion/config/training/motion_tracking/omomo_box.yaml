@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - /training/motion_tracking/supermimic
+  - _self_
+
+# Robot dimensions and passive box physics are taken from the manifest.
+experiment_name: omomo-box-imitation
+num_envs: 128
+algo:
+  config:
+    physics_backend: isaac_physx
+    buffer_steps: 500
+    horizon: 24
+    wm_batch: 256
+    pi_batch: 512
+    pi_microbatch: 128
+    world_only_updates: 100
+    lr: 0.0004
+    max_hours: 0.5
+    capture_graph: false
+    seed: 42

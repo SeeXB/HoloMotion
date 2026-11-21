@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - /training/motion_tracking/omomo_box
+  - _self_
+
+experiment_name: omomo-box-imitation-20k
+algo:
+  config:
+    max_actor_updates: 20000
+    max_updates: 320000
+    max_vector_steps: 800064
+    # Emergency ceiling, independent of the primary policy-update target.
+    max_hours: 24.0
+    checkpoint_minutes: 15.0

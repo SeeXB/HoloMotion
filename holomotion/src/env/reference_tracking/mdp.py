@@ -78,8 +78,8 @@ def unflatten_state(x: torch.Tensor):
         quat_to_mat(x[..., 3:7]),
         x[..., 7:10],
         x[..., 10:13],
-        x[..., 13:42],
-        x[..., 42:71],
+        x[..., 13 : 13 + (x.shape[-1] - 13) // 2],
+        x[..., 13 + (x.shape[-1] - 13) // 2 :],
     )
 
 
@@ -116,7 +116,8 @@ class MDP:
     ):
         self.kin, self.motion, self.cfg = kin, motion, cfg
         self.reference_orientation = reference_orientation
-        self.obs_dim = OBS_DIM if reference_orientation else OBS_DIM - 6
+        self.num_j = len(default_q)
+        self.obs_dim = 3 * self.num_j + 6 + (6 if reference_orientation else 0)
         self.default_q = default_q
         mid, half = (kin.q_lo + kin.q_hi) / 2, (kin.q_hi - kin.q_lo) / 2
         self.soft_lo, self.soft_hi = (
@@ -124,15 +125,32 @@ class MDP:
             mid + half * cfg.soft_limit_factor,
         )
         dev = default_q.device
-        self.obs_noise = OBS_NOISE[: self.obs_dim].to(dev)
-        self.obs_scale = OBS_SCALE[: self.obs_dim].to(dev)
+        n = self.num_j
+        self.obs_noise = torch.tensor(
+            [0.01] * n
+            + [0.5] * n
+            + [0.2] * 3
+            + [0.05] * 3
+            + [0.0] * n
+            + ([0.05] * 6 if reference_orientation else []),
+            device=dev,
+        )
+        self.obs_scale = torch.tensor(
+            [1.0] * n
+            + [0.1] * n
+            + [0.25] * 3
+            + [1.0] * 3
+            + [1.0] * n
+            + ([1.0] * 6 if reference_orientation else []),
+            device=dev,
+        )
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f) -> torch.Tensor:
         """Noise-free proprioceptive observation (+ reference-relative root orientation)."""
         p, R, v, w, q, qd = S
         Rt = R.transpose(-1, -2)
-        dq0 = xi[..., 1:30]
+        dq0 = xi[..., 1:-3]
         g_b = -R[..., 2, :]  # R^T (0,0,-1)
         parts = (
             q - self.default_q - dq0,
@@ -252,8 +270,8 @@ def normalize_xi(xi: torch.Tensor) -> torch.Tensor:
     return torch.cat(
         (
             (xi[..., :1] - 0.75) / 0.45,
-            xi[..., 1:30] / 0.01,
-            xi[..., 30:33] / 0.05,
+            xi[..., 1:-3] / 0.01,
+            xi[..., -3:] / 0.05,
         ),
         -1,
     )

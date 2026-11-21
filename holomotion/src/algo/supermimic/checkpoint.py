@@ -13,6 +13,7 @@ RESUME_OVERRIDES = {
     "max_hours",
     "max_vector_steps",
     "max_updates",
+    "max_actor_updates",
     "checkpoint_minutes",
     "policy_snapshot_minutes",
     "evaluate_minutes",

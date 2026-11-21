@@ -1,4 +1,4 @@
-"""Evaluate a saved compact policy using the independent complete-clip scorer."""
+"""Evaluate a compact policy using the independent complete-clip scorer."""
 
 from holomotion.src.evaluation.reference_tracking.isaac_evaluation import (
     IsaacFullClipEvaluator,
@@ -6,7 +6,7 @@ from holomotion.src.evaluation.reference_tracking.isaac_evaluation import (
 
 
 def evaluate_checkpoint(options, *, launched=None):
-    """Score the final policy in a fresh Isaac application, without learning."""
+    """Score the final policy in a fresh Isaac application."""
     import json
     import time
     from pathlib import Path
@@ -14,6 +14,9 @@ def evaluate_checkpoint(options, *, launched=None):
     import torch
 
     from holomotion.src.algo.supermimic import networks
+    from holomotion.src.env.reference_tracking.r1_box_contract import (
+        use_evaluation_box,
+    )
     from holomotion.src.env.reference_tracking.task import load_task
     from holomotion.src.utils.artifacts import fingerprint
 
@@ -57,8 +60,12 @@ def evaluate_checkpoint(options, *, launched=None):
         device=options.device,
         profile=options.profile,
     )
+    box_profile = use_evaluation_box(motion)
     policy = networks.Policy(
-        mdp.obs_dim, 73 * options.goal_frames, options.hist
+        mdp.obs_dim,
+        (15 + 2 * mdp.num_j) * options.goal_frames,
+        options.hist,
+        num_j=mdp.num_j,
     ).to(options.device)
     policy.load_state_dict(bundle["pi"], strict=True)
     evaluator = IsaacFullClipEvaluator(
@@ -90,6 +97,11 @@ def evaluate_checkpoint(options, *, launched=None):
         )
 
     result = evaluator.evaluate(policy, progress=progress)
+    if box_profile is not None:
+        result["box_profile"] = box_profile
+        result["scope"] = (
+            "Narrow-box robot reference; real-size box physics evaluation"
+        )
     verify_contract()
     path = options.output / "rollout_final.pt"
     torch.save(evaluator.last_trace, path)

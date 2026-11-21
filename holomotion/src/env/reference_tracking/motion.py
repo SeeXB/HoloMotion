@@ -63,12 +63,12 @@ class MotionLib:
 
         from holomotion.src.training.h5_dataloader import Hdf5RootDofDataset
 
-        from .robot import G1_JOINT_NAMES
+        joint_names = kin.contract.joints
 
         with open(manifest) as stream:
             metadata = json.load(stream)
         if (
-            metadata.get("dof_names") != G1_JOINT_NAMES
+            metadata.get("dof_names") != joint_names
             or metadata.get("root_quaternion_order") != "xyzw"
         ):
             raise ValueError(
@@ -90,7 +90,7 @@ class MotionLib:
             max_frame_length=max(lengths),
             min_window_length=44,
             fk_robot_file_path=str(urdf),
-            expected_dof_names=G1_JOINT_NAMES,
+            expected_dof_names=joint_names,
         )
         if len(dataset) != len(lengths):
             raise ValueError(

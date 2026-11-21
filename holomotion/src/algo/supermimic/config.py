@@ -23,6 +23,7 @@ class SuperMimicConfig:
     max_hours: float = 2.0
     max_vector_steps: int = 800064
     max_updates: int = 320000
+    max_actor_updates: int | None = None
     utd: str = "0.4"
     horizon: int = 32
     goal_frames: int = 10
@@ -75,6 +76,13 @@ class SuperMimicConfig:
         return result
 
     def validate(self):
+        if self.max_actor_updates is not None and (
+            type(self.max_actor_updates) is not int
+            or self.max_actor_updates < 1
+        ):
+            raise ValueError(
+                "max_actor_updates must be a positive integer or null"
+            )
         for key in (
             "compile",
             "capture_graph",

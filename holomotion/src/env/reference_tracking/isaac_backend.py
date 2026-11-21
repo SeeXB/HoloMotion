@@ -13,11 +13,6 @@ from holomotion.src.env.reference_tracking.mdp import (
     MAX_STEP_REWARD,
     flatten_state,
 )
-from holomotion.src.env.reference_tracking.robot import (
-    G1_JOINT_NAMES,
-    action_scale,
-    default_joint_pos_list,
-)
 from holomotion.src.env.reference_tracking.rotations import (
     mat_to_quat,
     quat_to_mat,
@@ -60,15 +55,15 @@ class IsaacTrackingBackend:
         self.reset_noise = not evaluation
         if self.__class__._active is not None:
             self.__class__._active.close()
-        self.default_q = torch.tensor(default_joint_pos_list(), device=device)
-        self.alpha = torch.tensor(
-            [action_scale(name) for name in G1_JOINT_NAMES], device=device
-        )
-        self._torso_id = model.body("torso_link").id
+        self.contract = mdp.kin.contract
+        self.num_j = len(self.contract.joints)
+        self.default_q = torch.tensor(self.contract.default, device=device)
+        self.alpha = torch.tensor(self.contract.action_scale, device=device)
+        self._torso_id = model.body(self.contract.torso).id
         self._ground_id = model.geom("floor").id
-        self.qpos = torch.zeros(num_envs, 36, device=device)
-        self.qvel = torch.zeros(num_envs, 35, device=device)
-        self.ctrl = torch.zeros(num_envs, 29, device=device)
+        self.qpos = torch.zeros(num_envs, 7 + self.num_j, device=device)
+        self.qvel = torch.zeros(num_envs, 6 + self.num_j, device=device)
+        self.ctrl = torch.zeros(num_envs, self.num_j, device=device)
         self._friction = torch.zeros(num_envs, model.ngeom, 3, device=device)
         self._com = torch.tensor(
             model.body_ipos.copy(), device=device, dtype=torch.float32
@@ -78,17 +73,17 @@ class IsaacTrackingBackend:
         with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
             self._setup_scene(model, num_envs, device, evaluation)
         self.__class__._active = self
-        self.xi = torch.zeros(num_envs, 33, device=device)
+        self.xi = torch.zeros(num_envs, self.num_j + 4, device=device)
         if not evaluation:
-            self.xi[:, 30:33] = torch.rand(
+            self.xi[:, -3:] = torch.rand(
                 num_envs, 3, device=device
             ) * torch.tensor([0.05, 0.1, 0.1], device=device) - torch.tensor(
                 [0.025, 0.05, 0.05], device=device
             )
-        self._com[:, self._torso_id] = self._nominal_com + self.xi[:, 30:33]
+        self._com[:, self._torso_id] = self._nominal_com + self.xi[:, -3:]
         self.f = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.ep_step = torch.zeros_like(self.f)
-        self.a_prev = torch.zeros(num_envs, 29, device=device)
+        self.a_prev = torch.zeros(num_envs, self.num_j, device=device)
         self.start_bin = torch.zeros_like(self.f)
         self.ep_disc_ret = torch.zeros(num_envs, device=device)
         self.ep_ret = torch.zeros_like(self.ep_disc_ret)
@@ -164,6 +159,12 @@ class IsaacTrackingBackend:
     def reset(self, ids, frames=None):
         if not len(ids):
             return
+        if frames is None and getattr(self.motion, "box", None):
+            frames = self.motion.clip_start[
+                torch.randint(
+                    len(self.motion.names), (len(ids),), device=self.device
+                )
+            ]
         if frames is None:
             frames, bins = self.sample_frames(len(ids))
         else:
@@ -182,7 +183,7 @@ class IsaacTrackingBackend:
             rotation = so3_exp(uniform([0.1, 0.1, 0.2])) @ rotation
             v += uniform([0.5, 0.5, 0.2])
             w += uniform([0.52, 0.52, 0.78])
-            q += uniform([0.1] * 29)
+            q += uniform([0.1] * self.num_j)
         q = q.clamp(self.mdp.kin.q_lo, self.mdp.kin.q_hi)
         self.qpos[ids] = torch.cat((p, mat_to_quat(rotation), q), -1)
         self.qvel[ids] = torch.cat(
@@ -198,14 +199,14 @@ class IsaacTrackingBackend:
         self.start_bin[ids] = bins
         self.ep_disc_ret[ids], self.ep_ret[ids] = 0.0, 0.0
         if self.eval_mode:
-            self.xi[ids, :30] = 0.0
+            self.xi[ids, : self.num_j + 1] = 0.0
             self.xi[ids, 0] = 1.0
         else:
             self.xi[ids, 0] = torch.empty(
                 len(ids), device=self.device
             ).uniform_(0.3, 1.2)
-            self.xi[ids, 1:30] = torch.empty(
-                len(ids), 29, device=self.device
+            self.xi[ids, 1 : self.num_j + 1] = torch.empty(
+                len(ids), self.num_j, device=self.device
             ).uniform_(-0.01, 0.01)
         self._friction[ids, :, 0] = self.xi[ids, :1]
         self._friction[ids, self._ground_id, 0] = (
@@ -213,6 +214,10 @@ class IsaacTrackingBackend:
         )
         self._write_physical_state(ids)
         self._apply_friction(ids)
+        if self.box is not None:
+            from holomotion.src.env.reference_tracking.box import reset_box
+
+            reset_box(self, ids, frames)
 
     @torch.no_grad()
     def step(self, action):
@@ -237,7 +242,7 @@ class IsaacTrackingBackend:
             self.ep_step.clone(),
         )
         self.ctrl.copy_(
-            self.default_q + context[:, 1:30] + self.alpha * action
+            self.default_q + context[:, 1:-3] + self.alpha * action
         )
         self._advance()
         next_state = self.state()
@@ -360,6 +365,15 @@ class IsaacTrackingBackend:
                 "no MuJoCo overflow bitset exists"
             ),
         )
+        if self.box is not None:
+            result["box"] = dict(
+                **self.motion.box,
+                dynamic=True,
+                trajectory_replayed=False,
+                measured_mass_kg=float(
+                    self.box.root_physx_view.get_masses()[0].sum()
+                ),
+            )
         return result
 
     def _setup_scene(self, model, count, device, evaluation):
@@ -370,12 +384,6 @@ class IsaacTrackingBackend:
         from isaaclab.sim import SimulationCfg, SimulationContext
         from isaaclab.utils import configclass
         from isaacsim.core.utils.stage import create_new_stage
-
-        from holomotion.src.env.reference_tracking.robot import (
-            _kd,
-            _kp,
-            motor_of,
-        )
 
         create_new_stage()
         self.sim = SimulationContext(
@@ -395,14 +403,17 @@ class IsaacTrackingBackend:
         )
         urdf, directory = self.robot_urdf, self.cache_dir
         motor_configs = {}
-        for name in G1_JOINT_NAMES:
-            effort, _, armature = motor_of(name)
+        for i, name in enumerate(self.contract.joints):
+            effort, armature = (
+                self.contract.effort[i],
+                self.contract.armature[i],
+            )
             motor_configs[name] = ImplicitActuatorCfg(
                 joint_names_expr=[name],
                 effort_limit_sim=effort,
-                velocity_limit_sim=motor_of(name)[1],
-                stiffness=_kp(armature),
-                damping=_kd(armature),
+                velocity_limit_sim=self.contract.velocity[i],
+                stiffness=self.contract.kp[i],
+                damping=self.contract.kd[i],
                 armature=armature,
                 friction=0.0,
             )
@@ -412,7 +423,7 @@ class IsaacTrackingBackend:
             force_usd_conversion=False,
             fix_base=False,
             merge_fixed_joints=True,
-            root_link_name="pelvis",
+            root_link_name=self.contract.root,
             replace_cylinders_with_capsules=False,
             self_collision=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -464,20 +475,29 @@ class IsaacTrackingBackend:
                 ),
             )
 
-        self.scene = InteractiveScene(
-            # Worlds have explicit collision isolation. Keep their numerical
-            # origins compact: an 8192-world 5 m grid spans 450 m and
-            # float32 link transforms exceed the 50 micrometre FK check.
-            Scene(num_envs=count, env_spacing=2.5, replicate_physics=True)
+        scene_cfg = Scene(
+            num_envs=count, env_spacing=2.5, replicate_physics=True
         )
+        if getattr(self.motion, "box", None):
+            from holomotion.src.env.reference_tracking.box import (
+                box_asset_config,
+            )
+
+            scene_cfg.box = box_asset_config(
+                self.motion.box, self.cache_dir / "box"
+            )
+        self.scene = InteractiveScene(scene_cfg)
         self.scene.filter_collisions(global_prim_paths=["/World/Ground"])
         self.robot = self.scene["robot"]
+        self.box = (
+            self.scene["box"] if getattr(self.motion, "box", None) else None
+        )
         self.sim.reset()
         self.scene.update(0.005)
         self.joint_ids = [
-            self.robot.joint_names.index(name) for name in G1_JOINT_NAMES
+            self.robot.joint_names.index(name) for name in self.contract.joints
         ]
-        self.torso_body_id = self.robot.body_names.index("torso_link")
+        self.torso_body_id = self.robot.body_names.index(self.contract.torso)
         self.origins = self.scene.env_origins
         self.materials = (
             self.robot.root_physx_view.get_material_properties().clone()
@@ -489,7 +509,7 @@ class IsaacTrackingBackend:
 
     def _apply_com(self):
         value = self.nominal_coms.clone()
-        value[:, self.torso_body_id, :3] += self.xi[:, 30:33].cpu()
+        value[:, self.torso_body_id, :3] += self.xi[:, -3:].cpu()
         self.robot.root_physx_view.set_coms(value, torch.arange(self.N))
 
     def _apply_friction(self, ids):
@@ -542,11 +562,6 @@ class IsaacTrackingBackend:
             self.__class__._active = None
 
     def _audit_schema(self, model):
-        from holomotion.src.env.reference_tracking.robot import (
-            _kd,
-            _kp,
-            motor_of,
-        )
 
         view = self.robot.root_physx_view
         result = {}
@@ -554,30 +569,32 @@ class IsaacTrackingBackend:
             (
                 "stiffness",
                 view.get_dof_stiffnesses()[0, self.joint_ids],
-                [_kp(motor_of(n)[2]) for n in G1_JOINT_NAMES],
+                self.contract.kp,
             ),
             (
                 "damping",
                 view.get_dof_dampings()[0, self.joint_ids],
-                [_kd(motor_of(n)[2]) for n in G1_JOINT_NAMES],
+                self.contract.kd,
             ),
             (
                 "effort_limit",
                 view.get_dof_max_forces()[0, self.joint_ids],
-                [motor_of(n)[0] for n in G1_JOINT_NAMES],
+                self.contract.effort,
             ),
             (
                 "velocity_limit",
                 view.get_dof_max_velocities()[0, self.joint_ids],
-                [motor_of(n)[1] for n in G1_JOINT_NAMES],
+                self.contract.velocity,
             ),
             (
                 "armature",
                 view.get_dof_armatures()[0, self.joint_ids],
-                [motor_of(n)[2] for n in G1_JOINT_NAMES],
+                self.contract.armature,
             ),
         ):
-            expected = torch.tensor(expected, device=actual.device)
+            expected = torch.tensor(
+                expected, device=actual.device, dtype=actual.dtype
+            )
             torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
             result[label + "_maximum_error"] = float(
                 (actual - expected).abs().max()

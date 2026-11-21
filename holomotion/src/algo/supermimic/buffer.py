@@ -23,10 +23,16 @@ FIELDS = {
 
 
 class ReplayBuffer:
-    def __init__(self, T: int, N: int, device: str):
+    def __init__(self, T: int, N: int, device: str, num_j=29):  # noqa: N803
         self.T, self.N, self.device = T, N, device
         self.data = {}
-        for k, (shape, dt) in FIELDS.items():
+        self.fields = dict(FIELDS)
+        for k in ("s", "s1"):
+            self.fields[k] = (13 + 2 * num_j, torch.float32)
+        for k in ("a", "a_prev"):
+            self.fields[k] = (num_j, torch.float32)
+        self.fields["xi"] = (num_j + 4, torch.float32)
+        for k, (shape, dt) in self.fields.items():
             shp = (T, N) + ((shape,) if isinstance(shape, int) else shape)
             self.data[k] = torch.zeros(shp, dtype=dt, device=device)
         self.ptr, self.size = 0, 0
@@ -34,7 +40,7 @@ class ReplayBuffer:
 
     def add(self, tr: dict):
         self.break_after[self.ptr].zero_()
-        for k in FIELDS:
+        for k in self.fields:
             self.data[k][self.ptr] = tr[k]
         self.ptr = (self.ptr + 1) % self.T
         self.size = min(self.size + 1, self.T)

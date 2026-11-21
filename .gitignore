@@ -101,3 +101,8 @@ MUJOCO_LOG.TXT
 /holoboxing/data/raw/
 /holoboxing/data/converted/
 /holoboxing/data/processed/
+
+# Local OMOMO runtime (shared installed Isaac stack).
+/.venv-omomo/
+/data/omomo-*/
+/:memory:.ses

@@ -85,6 +85,15 @@ class FullClipEvaluator:
                 "ended",
             )
         }
+        lift_meter = None
+        if getattr(env, "box", None) is not None:
+            from holomotion.src.env.reference_tracking.box import (
+                LiftMeter,
+                bottom_clearance,
+            )
+
+            lift_meter = LiftMeter(env.N, env.device)
+            trace["box_state"] = []
         max_steps = int(planned.max())
         for step in range(max_steps):
             active = ~env.done_eval
@@ -93,6 +102,21 @@ class FullClipEvaluator:
                 hist = torch.cat((hist[:, 1:], observation[:, None]), 1)
             action = policy(hist, motion.goal(env.f, self.future_frames))
             transition = env.step(action)
+            if lift_meter is not None:
+                box_pos = env.box.data.root_pos_w - env.origins
+                box_quat = env.box.data.root_quat_w
+                lift_meter.update(
+                    bottom_clearance(
+                        box_pos,
+                        box_quat,
+                        motion.box["size_m"],
+                        vertices=motion.box_vertices,
+                    ),
+                    active,
+                )
+                trace["box_state"].append(
+                    torch.cat((box_pos, box_quat), -1)[active].cpu()
+                )
             packet = dict(
                 clip_id=ids,
                 reference_frame=env.f,
@@ -137,7 +161,10 @@ class FullClipEvaluator:
             clip_names=motion.names,
             clip_start=motion.clip_start.cpu(),
             clip_length=motion.clip_len.cpu(),
-            state_convention="root XYZ, WXYZ, world linear/angular velocities, 29 SDK joints, 29 velocities",
+            state_convention=(
+                "root XYZ, WXYZ, world linear/angular velocities, "
+                "named robot joints, joint velocities"
+            ),
             control_interval_s=0.02,
         )
         clips = [
@@ -157,6 +184,11 @@ class FullClipEvaluator:
             )
             for i, name in enumerate(motion.names)
         ]
+        if lift_meter is not None:
+            for clip, lift in zip(
+                clips, lift_meter.report(env.failed_eval), strict=True
+            ):
+                clip["box_lift"] = lift
         return dict(
             evaluation_protocol=(
                 env.canonical.metadata()

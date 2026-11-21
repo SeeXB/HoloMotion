@@ -25,6 +25,7 @@ def build_parser():
     parser.add_argument("--max-hours", type=float, default=2.0)
     parser.add_argument("--max-vector-steps", type=int, default=800064)
     parser.add_argument("--max-updates", type=int, default=320000)
+    parser.add_argument("--max-actor-updates", type=int)
     parser.add_argument("--utd", default="0.4")
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--goal-frames", type=int, default=10)

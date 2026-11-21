@@ -73,6 +73,7 @@ python -m pip check
 这套 MuJoCo Warp 方案无需启动 Isaac Sim 或 Isaac Lab。后续命令请继续使用刚创建的独立环境。
 
 使用 Isaac PhysX 时，请切换到仓库配套的 Isaac Sim 5.0、Isaac Lab 2.2 环境。
+单片段 OMOMO 抱箱与 R1 迁移见 [G1／R1 纯动作模仿基线](omomo_box_imitation.zh-CN.md)。
 不要在该环境中安装 MuJoCo Warp 的依赖清单，以免覆盖仿真器依赖。
 通过 `algo.config.physics_backend=isaac_physx` 选择后端。
 启动器会分别在受管理的独立进程中运行训练和最终评测。

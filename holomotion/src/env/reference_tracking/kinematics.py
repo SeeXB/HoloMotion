@@ -14,17 +14,24 @@ import mujoco
 import numpy as np
 import torch
 
-from .robot import G1_JOINT_NAMES, TRACKED_BODIES
+from holomotion.src.env.reference_tracking.robot import TRACKED_BODIES
+from holomotion.src.env.reference_tracking.robot_contract import robot_contract
 from .rotations import axis_angle_to_mat, quat_to_mat
 
 
 class G1Kinematics:
     def __init__(
-        self, device: str, model, tracked: list[str] = TRACKED_BODIES
+        self,
+        device: str,
+        model,
+        tracked: list[str] = TRACKED_BODIES,
+        *,
+        contract=None,
     ):
         m = model
+        self.contract = contract or robot_contract()
         self.device = device
-        jname_to_idx = {n: i for i, n in enumerate(G1_JOINT_NAMES)}
+        jname_to_idx = {n: i for i, n in enumerate(self.contract.joints)}
         # moving bodies in tree order (mujoco orders parents before children)
         bodies, parent, joint_idx, axes, offs_p, offs_R = (
             [],
@@ -69,7 +76,7 @@ class G1Kinematics:
         self.tracked_idx = [bodies.index(n) for n in tracked]
         self.num_bodies = len(bodies)
         # joint limits (in G1_JOINT_NAMES order)
-        lo, hi = np.zeros(29), np.zeros(29)
+        lo, hi = np.zeros(len(jname_to_idx)), np.zeros(len(jname_to_idx))
         for j in range(m.njnt):
             n = m.joint(j).name
             if n in jname_to_idx:

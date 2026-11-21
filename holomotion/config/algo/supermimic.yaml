@@ -12,6 +12,7 @@ algo:
     max_hours: 2.0
     max_vector_steps: 800064
     max_updates: 320000
+    max_actor_updates: null
     utd: '0.4'
     horizon: 32
     goal_frames: 10

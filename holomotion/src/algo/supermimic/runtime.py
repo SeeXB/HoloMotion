@@ -170,7 +170,9 @@ def execute_isaac(options, *, training_operation=None):
         if training_operation is None
         else _supervise(options, training_operation=training_operation)
     )
-    report["training_process_wall_s"] = report["process_wall_s"]
+    report["training_process_wall_s"] = report.get(
+        "process_wall_s", report.get("elapsed_s", time.monotonic() - started)
+    )
     report["process_wall_s"] = time.monotonic() - started
     atomic_json(options.output / "report.json", report)
     if options.skip_evaluation or options.preflight_only:

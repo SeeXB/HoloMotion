@@ -17,6 +17,19 @@ from pathlib import Path
 from holomotion.src.utils.artifacts import atomic_json, fingerprint
 
 
+def training_budget_active(args, schedule, training_seconds):
+    """Keep policy updates distinct from physics and world-model clocks."""
+    return (
+        schedule.vector_steps < args.max_vector_steps
+        and schedule.world_updates < args.max_updates
+        and (
+            args.max_actor_updates is None
+            or schedule.actor_updates < args.max_actor_updates
+        )
+        and training_seconds < args.max_hours * 3600
+    )
+
+
 def run(args, *, launched=None):
     from importlib.metadata import version
 
@@ -59,6 +72,8 @@ def run(args, *, launched=None):
     repository = Path(__file__).resolve().parents[4]
     source_paths = [
         repository / "holomotion/scripts/training/train_supermimic.py",
+        repository / "holomotion/scripts/training/run_omomo_20k.py",
+        repository / "holomotion/scripts/training/run_omomo_box.sh",
         Path(__file__),
         *sorted((repository / "holomotion/src/algo/supermimic").glob("*")),
         *sorted(
@@ -71,6 +86,32 @@ def run(args, *, launched=None):
         ),
         repository
         / "holomotion/scripts/training/prepare_supermimic_lafan1.py",
+        repository / "holomotion/scripts/training/prepare_supermimic_omomo.py",
+        *(
+            repository / "holomotion/scripts/training" / name
+            for name in (
+                "prepare_supermimic_r1_omni.py",
+                "prepare_r1_stance_grip.py",
+                "prepare_r1_fixed_contacts.py",
+                "run_supermimic_r1_trajectory.py",
+                "run_supermimic_r1_batch.py",
+                "queue_r1_after_omni.py",
+                "export_supermimic.py",
+                "export_supermimic_bf16.py",
+            )
+        ),
+        *(
+            repository / "holomotion/scripts/evaluation" / name
+            for name in (
+                "evaluate_supermimic_snapshot.py",
+                "evaluate_supermimic_onnx.py",
+                "render_omomo_reference.py",
+                "render_omomo_rollout.py",
+                "render_r1_reference.py",
+            )
+        ),
+        *sorted((repository / "holomotion/src/deployment").glob("*.py")),
+        repository / "runtime_provenance.json",
         repository / "holomotion/src/utils/artifacts.py",
         repository / "holomotion/src/training/h5_dataloader.py",
         repository / "holomotion/src/training/reference_fk.py",
@@ -137,6 +178,12 @@ def run(args, *, launched=None):
                 args.robot_urdf,
                 *shards,
                 *robot_meshes,
+                *(
+                    [Path(motion.box["mesh_path"])]
+                    if getattr(motion, "box", None)
+                    and motion.box.get("mesh_path")
+                    else []
+                ),
             )
         },
         generated_model_sha256=fingerprint(args.output / "g1.xml"),
@@ -185,7 +232,7 @@ def run(args, *, launched=None):
             duration_hours=float((motion.clip_len - 1).sum() / 50 / 3600),
         ),
         actor_observation_dim=mdp.obs_dim,
-        goal_dim=73 * args.goal_frames,
+        goal_dim=(15 + 2 * mdp.num_j) * args.goal_frames,
         attribution=dict(
             reference="https://github.com/zita-ch/supermimic_vibed/tree/a1508d42c9d1699a52e8233ab16d08c488441ab9",
             cross_check="https://github.com/CuboiLeo/SuperMimic-Reproduced/tree/d9be385b3eeb13a638fb33fb200d3bfd9be9839f",
@@ -208,6 +255,20 @@ def run(args, *, launched=None):
         ),
         promotion_accepted=False,
     )
+    if getattr(motion, "box", None):
+        specification.update(
+            scope="OMOMO single-clip imitation with a passive dynamic box",
+            robot_contract=asdict(mdp.kin.contract),
+            box=motion.box,
+            evaluation_box=getattr(motion, "evaluation_box", None),
+            interaction_rewards=False,
+            object_observation=False,
+            object_world_model_state=False,
+            episode_initialization=(
+                "Clip start only; object pose initialized once at reset"
+            ),
+            reference_target=None,
+        )
     atomic_json(args.output / "specification.json", specification)
     env = backend_class(args)(
         model,
@@ -222,7 +283,9 @@ def run(args, *, launched=None):
         transitions = []
         for _ in range(args.warmup_steps):
             transitions.append(
-                env.step(torch.zeros(args.num_envs, 29, device=args.device))
+                env.step(
+                    torch.zeros(args.num_envs, mdp.num_j, device=args.device)
+                )
             )
         torch.save(
             dict(
@@ -240,7 +303,9 @@ def run(args, *, launched=None):
             elapsed_s=time.monotonic() - launched,
             specification=specification,
         )
-    buffer = ReplayBuffer(args.buffer_steps, args.num_envs, args.device)
+    buffer = ReplayBuffer(
+        args.buffer_steps, args.num_envs, args.device, num_j=mdp.num_j
+    )
     learner = ReferenceLearner(args, motion, mdp, buffer)
     schedule = UpdateSchedule(
         ScheduleConfig(
@@ -421,11 +486,8 @@ def run(args, *, launched=None):
         * 60
     )
     recent = []
-    while (
-        schedule.vector_steps < args.max_vector_steps
-        and schedule.world_updates < args.max_updates
-        and training_wall() < args.max_hours * 3600
-    ):
+    preview_actor_saved = schedule.actor_updates >= 10000
+    while training_budget_active(args, schedule, training_wall()):
         collection_start = time.monotonic()
         with torch.no_grad():
             observation = mdp.add_noise(
@@ -587,6 +649,13 @@ def run(args, *, launched=None):
             print(json.dumps(summary), flush=True)
         if policy_progress is not None:
             policy_progress.due()
+        if (
+            getattr(motion, "box", None)
+            and schedule.actor_updates == 10000
+            and not preview_actor_saved
+        ):
+            save("actor_010000")
+            preview_actor_saved = True
         elapsed = training_wall()
         checkpoint_due = elapsed >= next_checkpoint
         evaluation_due = (

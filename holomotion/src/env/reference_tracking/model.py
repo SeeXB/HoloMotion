@@ -5,10 +5,11 @@ from pathlib import Path
 
 import mujoco
 
-from .robot import G1_JOINT_NAMES, _kd, _kp, motor_of
+from holomotion.src.env.reference_tracking.robot_contract import robot_contract
 
 
-def build_model(urdf, output, *, self_collisions=True):
+def build_model(urdf, output, *, self_collisions=True, contract=None):
+    contract = contract or robot_contract()
     urdf, output = Path(urdf).resolve(), Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     robot = ET.parse(urdf).getroot()
@@ -34,7 +35,7 @@ def build_model(urdf, output, *, self_collisions=True):
     intermediate = output.with_suffix(".compiled.xml")
     mujoco.mj_saveLastXML(str(intermediate), compiled)
     root = ET.parse(intermediate).getroot()
-    pelvis = root.find('.//body[@name="pelvis"]')
+    pelvis = root.find(f'.//body[@name="{contract.root}"]')
     if pelvis is None:
         raise ValueError("URDF conversion did not retain the pelvis link")
     ET.SubElement(pelvis, "freejoint", name="floating_base_joint")
@@ -52,8 +53,8 @@ def build_model(urdf, output, *, self_collisions=True):
     if actuator is not None:
         root.remove(actuator)
     actuator = ET.SubElement(root, "actuator")
-    for name in G1_JOINT_NAMES:
-        effort, _, armature = motor_of(name)
+    for i, name in enumerate(contract.joints):
+        effort, armature = contract.effort[i], contract.armature[i]
         joint = root.find(f'.//joint[@name="{name}"]')
         if joint is None:
             raise ValueError(f"URDF conversion lost joint {name}")
@@ -65,9 +66,9 @@ def build_model(urdf, output, *, self_collisions=True):
             "general",
             name=name + "_drive",
             joint=name,
-            gainprm=str(_kp(armature)),
+            gainprm=str(contract.kp[i]),
             biastype="affine",
-            biasprm=f"0 {-_kp(armature)} {-_kd(armature)}",
+            biasprm=f"0 {-contract.kp[i]} {-contract.kd[i]}",
             forcelimited="true",
             forcerange=f"{-effort} {effort}",
         )
@@ -95,11 +96,15 @@ def build_model(urdf, output, *, self_collisions=True):
     ET.indent(root)
     output.write_text(ET.tostring(root, encoding="unicode"))
     model = mujoco.MjModel.from_xml_path(str(output))
-    if (model.nq, model.nv, model.nu) != (36, 35, 29):
+    if (model.nq, model.nv, model.nu) != (
+        7 + len(contract.joints),
+        6 + len(contract.joints),
+        len(contract.joints),
+    ):
         raise ValueError(
             f"Unexpected G1 model dimensions: {model.nq}/{model.nv}/{model.nu}"
         )
-    if [model.joint(i).name for i in range(1, model.njnt)] != G1_JOINT_NAMES:
+    if [model.joint(i).name for i in range(1, model.njnt)] != contract.joints:
         raise ValueError(
             "MuJoCo joint order differs from the declared reference data order"
         )

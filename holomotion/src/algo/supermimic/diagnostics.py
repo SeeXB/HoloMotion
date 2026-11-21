@@ -27,8 +27,8 @@ def dynamics_diagnostics(learner, *, seed, batch_size=256, horizon=8):
         + [0.1] * 3
         + [0.5] * 3
         + [1.0] * 3
-        + [0.1] * 29
-        + [2.0] * 29,
+        + [0.1] * learner.mdp.num_j
+        + [2.0] * learner.mdp.num_j,
         device=replay.device,
     )
     steps = []
@@ -70,10 +70,13 @@ def dynamics_diagnostics(learner, *, seed, batch_size=256, horizon=8):
                     error[:, 9:12].square().mean().sqrt()
                 ),
                 joint_position_component_rmse_rad=float(
-                    error[:, 12:41].square().mean().sqrt()
+                    error[:, 12 : 12 + learner.mdp.num_j]
+                    .square()
+                    .mean()
+                    .sqrt()
                 ),
                 joint_velocity_component_rmse_rad_s=float(
-                    error[:, 41:].square().mean().sqrt()
+                    error[:, 12 + learner.mdp.num_j :].square().mean().sqrt()
                 ),
             )
         )

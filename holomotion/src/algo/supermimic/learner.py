@@ -13,8 +13,6 @@ import torch
 from torch import nn
 
 from holomotion.src.env.reference_tracking.mdp import (
-    CRITIC_EXTRA,
-    INV_DIM,
     normalize_xi,
     unflatten_state,
 )
@@ -33,10 +31,21 @@ class ReferenceLearner:
         )
         self.dev = args.device
         self.K, self.Hh, self.HZ = args.goal_frames, args.hist, args.horizon
-        goal_dim = 73 * self.K
-        self.wm = WorldModel().to(self.dev)
-        self.pi = Policy(mdp.obs_dim, goal_dim, hist=self.Hh).to(self.dev)
-        self.critic = Critic(INV_DIM + CRITIC_EXTRA + goal_dim).to(self.dev)
+        num_j = motion.q.shape[-1]
+        goal_dim = (15 + 2 * num_j) * self.K
+        self.wm = WorldModel(num_j=num_j).to(self.dev)
+        self.pi = Policy(mdp.obs_dim, goal_dim, hist=self.Hh, num_j=num_j).to(
+            self.dev
+        )
+        self.critic = Critic(
+            (13 + 2 * num_j)
+            + num_j
+            + motion.body_p.shape[-2] * 3
+            + 3
+            + 6
+            + (num_j + 4)
+            + goal_dim
+        ).to(self.dev)
         self.opt_wm = torch.optim.Adam(self.wm.parameters(), lr=args.lr)
         self.opt_pi = torch.optim.Adam(
             self.pi.parameters(), lr=args.lr, betas=(0.9, 0.95)
@@ -47,8 +56,8 @@ class ReferenceLearner:
             + [0.005] * 3
             + [0.02] * 3
             + [0.05] * 3
-            + [0.003] * 29
-            + [0.05] * 29,
+            + [0.003] * num_j
+            + [0.05] * num_j,
             device=self.dev,
         )
         self.PROFILE = False
